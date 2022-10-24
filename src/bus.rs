@@ -58,12 +58,18 @@ impl<USB: UsbPeripheral> UsbBus<USB> {
         let fifo_size = self.allocator.memory_allocator.tx_fifo_size_words(0);
 
         #[cfg(feature = "fs")]
-        write_reg!(otg_global, regs.global(), DIEPTXF0,
+        write_reg!(
+            otg_global,
+            regs.global(),
+            DIEPTXF0,
             TX0FD: fifo_size as u32,
             TX0FSA: fifo_top as u32
         );
         #[cfg(feature = "hs")]
-        write_reg!(otg_global, regs.global(), GNPTXFSIZ,
+        write_reg!(
+            otg_global,
+            regs.global(),
+            GNPTXFSIZ,
             TX0FD: fifo_size as u32,
             TX0FSA: fifo_top as u32
         );
@@ -75,7 +81,10 @@ impl<USB: UsbPeripheral> UsbBus<USB> {
             let fifo_size = self.allocator.memory_allocator.tx_fifo_size_words(i);
 
             let dieptxfx = regs.dieptxfx(i);
-            write_reg!(otg_global_dieptxfx, dieptxfx, DIEPTXFx,
+            write_reg!(
+                otg_global_dieptxfx,
+                dieptxfx,
+                DIEPTXFx,
                 INEPTXFD: fifo_size as u32,
                 INEPTXSA: fifo_top as u32
             );
@@ -617,7 +626,7 @@ impl<USB: UsbPeripheral> usb_device::bus::UsbBus for UsbBus<USB> {
                 let speed = read_reg!(otg_device, regs.device(), DSTS, ENUMSPD);
 
                 // Compute and update TRDT
-                let trdt;
+                let mut trdt = 0;
                 match speed {
                     0b00 => {
                         // High speed
@@ -633,7 +642,8 @@ impl<USB: UsbPeripheral> usb_device::bus::UsbBus for UsbBus<USB> {
                         // Full speed
 
                         // From RM0431 (F72xx), RM0090 (F429)
-                        trdt = match self.peripheral.ahb_frequency_hz() {
+                        #[cfg(not(feature = "esp32sx"))]
+                        let _trdt = match self.peripheral.ahb_frequency_hz() {
                             0..=14_199_999 => panic!("AHB frequency is too low"),
                             14_200_000..=14_999_999 => 0xF,
                             15_000_000..=15_999_999 => 0xE,
@@ -646,6 +656,11 @@ impl<USB: UsbPeripheral> usb_device::bus::UsbBus for UsbBus<USB> {
                             27_500_000..=31_999_999 => 0x7, // 27.7..32 in code from CubeIDE
                             32_000_000..=u32::MAX => 0x6,
                         };
+
+                        #[cfg(feature = "esp32sx")]
+                        let _trdt = 5;
+
+                        trdt = trdt;
                     }
                     _ => unimplemented!(),
                 }
@@ -690,7 +705,10 @@ impl<USB: UsbPeripheral> usb_device::bus::UsbBus for UsbBus<USB> {
                         0x03 | 0x04 => {
                             // OUT completed | SETUP completed
                             // Re-enable the endpoint, F429-like chips only
-                            if core_id == 0x0000_1200 || core_id == 0x0000_1100 {
+                            if core_id == 0x4f54_400a
+                                || core_id == 0x0000_1200
+                                || core_id == 0x0000_1100
+                            {
                                 let ep = regs.endpoint_out(epnum as usize);
                                 modify_reg!(endpoint_out, ep, DOEPCTL, CNAK: 1, EPENA: 1);
                             }
@@ -713,7 +731,8 @@ impl<USB: UsbPeripheral> usb_device::bus::UsbBus for UsbBus<USB> {
                                     .ok();
 
                                 // Re-enable the endpoint, F446-like chips only
-                                if core_id == 0x0000_2000
+                                if core_id == 0x4f54_400a
+                                    || core_id == 0x0000_2000
                                     || core_id == 0x0000_2100
                                     || core_id == 0x0000_2300
                                     || core_id == 0x0000_3000
