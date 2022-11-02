@@ -1,5 +1,5 @@
-[![crates.io](https://img.shields.io/crates/d/esp-synopsys-usb-otg.svg)](https://crates.io/crates/synopsys-usb-otg)
-[![crates.io](https://img.shields.io/crates/v/esp-synopsys-usb-otg.svg)](https://crates.io/crates/synopsys-usb-otg)
+[![crates.io](https://img.shields.io/crates/d/esp-synopsys-usb-otg.svg)](https://crates.io/crates/esp-synopsys-usb-otg)
+[![crates.io](https://img.shields.io/crates/v/esp-synopsys-usb-otg.svg)](https://crates.io/crates/esp-synopsys-usb-otg)
 
 # This is a fork of [synopsys-usb-otg](https://crates.io/crates/synopsys-usb-otg) with support for ESP32-Sx added - please use https://github.com/stm32-rs/synopsys-usb-otg when not targeting ESP32-Sx
 
