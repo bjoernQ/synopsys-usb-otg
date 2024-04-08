@@ -773,9 +773,14 @@ impl<USB: UsbPeripheral> usb_device::bus::UsbBus for UsbBus<USB> {
                                 } = ep.ep_type()
                                 {
                                     let odd = read_reg!(endpoint_in, ep_regs, DIEPCTL, EONUM_DPID);
+                                    #[cfg(feature = "fs")]
                                     modify_reg!(endpoint_in, ep_regs, DIEPCTL,
                                         SD0PID_SEVNFRM: odd as u32,
                                         SODDFRM_SD1PID: !odd as u32);
+                                    #[cfg(feature = "hs")]
+                                    modify_reg!(endpoint_in, ep_regs, DIEPCTL,
+                                            SD0PID_SEVNFRM: odd as u32,
+                                            SODDFRM: !odd as u32);
                                 }
                                 write_reg!(endpoint_in, ep_regs, DIEPINT, XFRC: 1);
                                 ep_in_complete |= 1 << ep.address().index();
