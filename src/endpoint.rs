@@ -6,7 +6,7 @@ use crate::UsbPeripheral;
 use core::cell::RefCell;
 use core::ops::{Deref, DerefMut};
 use critical_section::{CriticalSection, Mutex};
-use usb_device::endpoint::EndpointAddress;
+use usb_device::endpoint::{EndpointAddress, EndpointType};
 use usb_device::{Result, UsbDirection, UsbError};
 
 pub fn set_stalled(usb: UsbRegisters, address: EndpointAddress, stalled: bool) {
@@ -58,6 +58,10 @@ impl Endpoint {
     fn index(&self) -> u8 {
         self.descriptor.address.index() as u8
     }
+
+    pub fn ep_type(&self) -> EndpointType {
+        self.descriptor.ep_type
+    }
 }
 
 pub struct EndpointIn {
@@ -86,14 +90,30 @@ impl EndpointIn {
             write_reg!(endpoint_in, regs, DIEPTSIZ, PKTCNT: 0, XFRSIZ: self.descriptor.max_packet_size as u32);
         } else {
             let regs = self.usb.endpoint_in(self.index() as usize);
-            write_reg!(endpoint_in, regs, DIEPCTL,
-                SNAK: 1,
-                USBAEP: 1,
-                EPTYP: self.descriptor.ep_type.to_bm_attributes() as u32,
-                SD0PID_SEVNFRM: 1,
-                TXFNUM: self.index() as u32,
-                MPSIZ: self.descriptor.max_packet_size as u32
-            );
+            if let EndpointType::Isochronous {
+                synchronization: _,
+                usage: _,
+            } = self.descriptor.ep_type
+            {
+                write_reg!(endpoint_in, regs, DIEPCTL,
+                    SNAK: 1,
+                    USBAEP: 1,
+                    EPTYP: self.descriptor.ep_type.to_bm_attributes() as u32,
+                    SD0PID_SEVNFRM: 1,
+                    TXFNUM: self.index() as u32,
+                    MPSIZ: self.descriptor.max_packet_size as u32,
+                    EONUM_DPID: 0
+                );
+            } else {
+                write_reg!(endpoint_in, regs, DIEPCTL,
+                    SNAK: 1,
+                    USBAEP: 1,
+                    EPTYP: self.descriptor.ep_type.to_bm_attributes() as u32,
+                    SD0PID_SEVNFRM: 1,
+                    TXFNUM: self.index() as u32,
+                    MPSIZ: self.descriptor.max_packet_size as u32
+                );
+            }
         }
     }
 
@@ -178,14 +198,33 @@ impl EndpointOut {
             modify_reg!(endpoint0_out, regs, DOEPCTL0, MPSIZ: mpsiz as u32, EPENA: 1, CNAK: 1);
         } else {
             let regs = self.usb.endpoint_out(self.index() as usize);
-            write_reg!(endpoint_out, regs, DOEPCTL,
-                SD0PID_SEVNFRM: 1,
-                CNAK: 1,
-                EPENA: 1,
-                USBAEP: 1,
-                EPTYP: self.descriptor.ep_type.to_bm_attributes() as u32,
-                MPSIZ: self.descriptor.max_packet_size as u32
-            );
+            if let EndpointType::Isochronous {
+                synchronization: _,
+                usage: _,
+            } = self.descriptor.ep_type
+            {
+                write_reg!(endpoint_out, regs, DOEPTSIZ, PKTCNT: 1, XFRSIZ: 0);
+                // let odd = read_reg!(otg_device, self.usb.device(), DSTS, FNSOF) & 0x01 == 1;
+                write_reg!(endpoint_out, regs, DOEPCTL,
+                    //SODDFRM: 1,
+                    SD0PID_SEVNFRM: 1,
+                    CNAK: 1,
+                    EPENA: 1,
+                    USBAEP: 1,
+                    EPTYP: self.descriptor.ep_type.to_bm_attributes() as u32,
+                    MPSIZ: self.descriptor.max_packet_size as u32,
+                    EONUM_DPID: 0
+                );
+            } else {
+                write_reg!(endpoint_out, regs, DOEPCTL,
+                    SD0PID_SEVNFRM: 1,
+                    CNAK: 1,
+                    EPENA: 1,
+                    USBAEP: 1,
+                    EPTYP: self.descriptor.ep_type.to_bm_attributes() as u32,
+                    MPSIZ: self.descriptor.max_packet_size as u32
+                );
+            }
         }
     }
 
