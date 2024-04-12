@@ -719,6 +719,22 @@ impl<USB: UsbPeripheral> usb_device::bus::UsbBus for UsbBus<USB> {
                         }
                     }
 
+                    if status == 0x02 {
+                        if let Some(ep) = &self.allocator.endpoints_out[epnum as usize] {
+                            if let EndpointType::Isochronous {
+                                synchronization: _,
+                                usage: _,
+                            } = ep.ep_type()
+                            {
+                                let ep = regs.endpoint_out(epnum as usize);
+                                let odd = read_reg!(endpoint_out, ep, DOEPCTL, EONUM_DPID);
+                                modify_reg!(endpoint_out, ep, DOEPCTL,
+                                    SD0PID_SEVNFRM: odd as u32,
+                                    SODDFRM: !odd as u32);
+                            }
+                        }
+                    }
+
                     if status == 0x02 || status == 0x06 {
                         if let Some(ep) = &self.allocator.endpoints_out[epnum as usize] {
                             let mut buffer = ep.buffer.borrow_ref_mut(cs);
@@ -751,6 +767,21 @@ impl<USB: UsbPeripheral> usb_device::bus::UsbBus for UsbBus<USB> {
                         if let Some(ep) = ep {
                             let ep_regs = regs.endpoint_in(ep.address().index());
                             if read_reg!(endpoint_in, ep_regs, DIEPINT, XFRC) != 0 {
+                                if let EndpointType::Isochronous {
+                                    synchronization: _,
+                                    usage: _,
+                                } = ep.ep_type()
+                                {
+                                    let odd = read_reg!(endpoint_in, ep_regs, DIEPCTL, EONUM_DPID);
+                                    #[cfg(feature = "fs")]
+                                    modify_reg!(endpoint_in, ep_regs, DIEPCTL,
+                                        SD0PID_SEVNFRM: odd as u32,
+                                        SODDFRM_SD1PID: !odd as u32);
+                                    #[cfg(feature = "hs")]
+                                    modify_reg!(endpoint_in, ep_regs, DIEPCTL,
+                                            SD0PID_SEVNFRM: odd as u32,
+                                            SODDFRM: !odd as u32);
+                                }
                                 write_reg!(endpoint_in, ep_regs, DIEPINT, XFRC: 1);
                                 ep_in_complete |= 1 << ep.address().index();
                             }
