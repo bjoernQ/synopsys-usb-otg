@@ -141,9 +141,6 @@ impl EndpointIn {
             }
         }
 
-        #[cfg(feature = "fs")]
-        write_reg!(endpoint_in, ep, DIEPTSIZ, PKTCNT: 1, XFRSIZ: buf.len() as u32);
-        #[cfg(feature = "hs")]
         write_reg!(endpoint_in, ep, DIEPTSIZ, MCNT: 1, PKTCNT: 1, XFRSIZ: buf.len() as u32);
 
         match self.descriptor.ep_type {
