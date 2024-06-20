@@ -708,9 +708,12 @@ impl<USB: UsbPeripheral> usb_device::bus::UsbBus for UsbBus<USB> {
                     // > In case of isochronous IN endpoints the interrupt gets
                     // > generated when a zero length packet is transmitted due
                     // > to unavailability of data in the Tx FIFO.
-                    if read_reg!(endpoint_in, ep_regs, DIEPINT) & 1 << 13 == 0 {
-                        continue;
-                    }
+                    //
+                    // This check is currently disabled because it causes problems
+                    // at least with macOS.
+                    // if read_reg!(endpoint_in, ep_regs, DIEPINT) & 1 << 13 == 0 {
+                    //     continue;
+                    // }
 
                     // Set NAK
                     modify_reg!(endpoint_in, ep_regs, DIEPCTL, SNAK: 1);
