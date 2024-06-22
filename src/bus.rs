@@ -697,23 +697,25 @@ impl<USB: UsbPeripheral> usb_device::bus::UsbBus for UsbBus<USB> {
                 for epnum in in_endpoints {
                     let ep_regs = regs.endpoint_in(epnum);
 
-                    // filter out non-isochronous endpoints
+                    // Filter out non-isochronous endpoints
                     if read_reg!(endpoint_in, ep_regs, DIEPCTL, EPTYP) & 0x11 != 0x01 {
                         continue;
                     }
 
-                    // identify incomplete transfers by the presence of the NAK event
-                    // see RM0383 Rev 3 pp 746 description of NAK:
-                    //
-                    // > In case of isochronous IN endpoints the interrupt gets
-                    // > generated when a zero length packet is transmitted due
-                    // > to unavailability of data in the Tx FIFO.
-                    //
-                    // This check is currently disabled because it causes problems
-                    // at least with macOS.
-                    // if read_reg!(endpoint_in, ep_regs, DIEPINT) & 1 << 13 == 0 {
-                    //     continue;
-                    // }
+                    // RM0383 states that the NAK bit in DIEPINT is set when a
+                    // zero length packet is transmitted due to unavailability
+                    // of data in the Tx FIFO.
+                    // However, this bit is not defined in the RAL and
+                    // by checking several STM32 RMs, it's even unclear
+                    // if it actually exists on OTG_FS peripherals.
+                    // While testing with macOS, the bit was never set.
+                    // Therefore, an alternative method is used to check if
+                    // an endpoint is affected.
+                    // TODO: investigate if this check works correctly and
+                    // does not affect other isochronous IN endpoints by mistake.
+                    if read_reg!(endpoint_in, ep_regs, DIEPCTL, NAKSTS) == 1 {
+                        continue;
+                    }
 
                     // Set NAK
                     modify_reg!(endpoint_in, ep_regs, DIEPCTL, SNAK: 1);
