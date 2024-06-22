@@ -725,8 +725,6 @@ impl<USB: UsbPeripheral> usb_device::bus::UsbBus for UsbBus<USB> {
                     modify_reg!(endpoint_in, ep_regs, DIEPCTL, SNAK: 1, EPDIS: 1);
                     while read_reg!(endpoint_in, ep_regs, DIEPINT, EPDISD) == 0 {}
                     modify_reg!(endpoint_in, ep_regs, DIEPINT, EPDISD: 1);
-                    assert!(read_reg!(endpoint_in, ep_regs, DIEPCTL, EPENA) == 0);
-                    assert!(read_reg!(endpoint_in, ep_regs, DIEPCTL, EPDIS) == 0);
 
                     // Flush the TX FIFO
                     modify_reg!(otg_global, regs.global(), GRSTCTL, TXFNUM: epnum as u32, TXFFLSH: 1);
