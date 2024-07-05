@@ -1,5 +1,7 @@
 use crate::endpoint_memory::{EndpointBuffer, EndpointBufferState};
-use crate::ral::{endpoint0_out, endpoint_in, endpoint_out, modify_reg, read_reg, write_reg};
+use crate::ral::{
+    endpoint0_out, endpoint_in, endpoint_out, modify_reg, otg_device, read_reg, write_reg,
+};
 use crate::target::{fifo_write, UsbRegisters};
 use crate::transition::EndpointDescriptor;
 use crate::UsbPeripheral;
@@ -90,30 +92,14 @@ impl EndpointIn {
             write_reg!(endpoint_in, regs, DIEPTSIZ, PKTCNT: 0, XFRSIZ: self.descriptor.max_packet_size as u32);
         } else {
             let regs = self.usb.endpoint_in(self.index() as usize);
-            if let EndpointType::Isochronous {
-                synchronization: _,
-                usage: _,
-            } = self.descriptor.ep_type
-            {
-                write_reg!(endpoint_in, regs, DIEPCTL,
-                    SNAK: 1,
-                    USBAEP: 1,
-                    EPTYP: self.descriptor.ep_type.to_bm_attributes() as u32,
-                    SD0PID_SEVNFRM: 1,
-                    TXFNUM: self.index() as u32,
-                    MPSIZ: self.descriptor.max_packet_size as u32,
-                    EONUM_DPID: 0
-                );
-            } else {
-                write_reg!(endpoint_in, regs, DIEPCTL,
-                    SNAK: 1,
-                    USBAEP: 1,
-                    EPTYP: self.descriptor.ep_type.to_bm_attributes() as u32,
-                    SD0PID_SEVNFRM: 1,
-                    TXFNUM: self.index() as u32,
-                    MPSIZ: self.descriptor.max_packet_size as u32
-                );
-            }
+            write_reg!(endpoint_in, regs, DIEPCTL,
+                SNAK: 1,
+                USBAEP: 1,
+                EPTYP: self.descriptor.ep_type.to_bm_attributes() as u32,
+                SD0PID_SEVNFRM: 1,
+                TXFNUM: self.index() as u32,
+                MPSIZ: self.descriptor.max_packet_size as u32
+            );
         }
     }
 
@@ -138,6 +124,7 @@ impl EndpointIn {
 
     pub fn write(&self, buf: &[u8]) -> Result<()> {
         let ep = self.usb.endpoint_in(self.index() as usize);
+        let device = self.usb.device();
         if self.index() != 0 && read_reg!(endpoint_in, ep, DIEPCTL, EPENA) != 0 {
             return Err(UsbError::WouldBlock);
         }
@@ -154,10 +141,27 @@ impl EndpointIn {
             }
         }
 
-        #[cfg(feature = "fs")]
-        write_reg!(endpoint_in, ep, DIEPTSIZ, PKTCNT: 1, XFRSIZ: buf.len() as u32);
-        #[cfg(feature = "hs")]
         write_reg!(endpoint_in, ep, DIEPTSIZ, MCNT: 1, PKTCNT: 1, XFRSIZ: buf.len() as u32);
+
+        match self.descriptor.ep_type {
+            // Isochronous endpoints must set the correct even/odd frame bit to
+            // correspond with the next frame's number.
+            EndpointType::Isochronous { .. } => {
+                // Previous frame number is OTG_DSTS.FNSOF
+                let frame_number = read_reg!(otg_device, device, DSTS, FNSOF);
+                if frame_number & 0x1 == 1 {
+                    // Previous frame number is odd, so upcoming frame is even
+                    modify_reg!(endpoint_in, ep, DIEPCTL, SD0PID_SEVNFRM: 1);
+                } else {
+                    // Previous frame number is even, so upcoming frame is odd
+                    #[cfg(feature = "fs")]
+                    modify_reg!(endpoint_in, ep, DIEPCTL, SODDFRM_SD1PID: 1);
+                    #[cfg(feature = "hs")]
+                    modify_reg!(endpoint_in, ep, DIEPCTL, SODDFRM: 1);
+                }
+            }
+            _ => {}
+        }
 
         modify_reg!(endpoint_in, ep, DIEPCTL, CNAK: 1, EPENA: 1);
 
@@ -198,33 +202,14 @@ impl EndpointOut {
             modify_reg!(endpoint0_out, regs, DOEPCTL0, MPSIZ: mpsiz as u32, EPENA: 1, CNAK: 1);
         } else {
             let regs = self.usb.endpoint_out(self.index() as usize);
-            if let EndpointType::Isochronous {
-                synchronization: _,
-                usage: _,
-            } = self.descriptor.ep_type
-            {
-                write_reg!(endpoint_out, regs, DOEPTSIZ, PKTCNT: 1, XFRSIZ: 0);
-                // let odd = read_reg!(otg_device, self.usb.device(), DSTS, FNSOF) & 0x01 == 1;
-                write_reg!(endpoint_out, regs, DOEPCTL,
-                    //SODDFRM: 1,
-                    SD0PID_SEVNFRM: 1,
-                    CNAK: 1,
-                    EPENA: 1,
-                    USBAEP: 1,
-                    EPTYP: self.descriptor.ep_type.to_bm_attributes() as u32,
-                    MPSIZ: self.descriptor.max_packet_size as u32,
-                    EONUM_DPID: 0
-                );
-            } else {
-                write_reg!(endpoint_out, regs, DOEPCTL,
-                    SD0PID_SEVNFRM: 1,
-                    CNAK: 1,
-                    EPENA: 1,
-                    USBAEP: 1,
-                    EPTYP: self.descriptor.ep_type.to_bm_attributes() as u32,
-                    MPSIZ: self.descriptor.max_packet_size as u32
-                );
-            }
+            write_reg!(endpoint_out, regs, DOEPCTL,
+                SD0PID_SEVNFRM: 1,
+                CNAK: 1,
+                EPENA: 1,
+                USBAEP: 1,
+                EPTYP: self.descriptor.ep_type.to_bm_attributes() as u32,
+                MPSIZ: self.descriptor.max_packet_size as u32
+            );
         }
     }
 
@@ -244,6 +229,26 @@ impl EndpointOut {
     }
 
     pub fn read(&self, buf: &mut [u8]) -> Result<usize> {
+        let ep = self.usb.endpoint_out(self.index() as usize);
+        let device = self.usb.device();
+
+        match self.descriptor.ep_type {
+            // Isochronous endpoints must set the correct even/odd frame bit to
+            // correspond with the next frame's number.
+            EndpointType::Isochronous { .. } => {
+                // Previous frame number is OTG_DSTS.FNSOF
+                let frame_number = read_reg!(otg_device, device, DSTS, FNSOF);
+                if frame_number & 0x1 == 1 {
+                    // Previous frame number is odd, so upcoming frame is even
+                    modify_reg!(endpoint_out, ep, DOEPCTL, SD0PID_SEVNFRM: 1);
+                } else {
+                    // Previous frame number is even, so upcoming frame is odd
+                    modify_reg!(endpoint_out, ep, DOEPCTL, SODDFRM: 1);
+                }
+            }
+            _ => {}
+        }
+
         critical_section::with(|cs| self.buffer.borrow_ref_mut(cs).read_packet(buf))
     }
 

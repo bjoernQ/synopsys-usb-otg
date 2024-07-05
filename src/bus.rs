@@ -511,7 +511,8 @@ impl<USB: UsbPeripheral> usb_device::bus::UsbBus for UsbBus<USB> {
             write_reg!(otg_global, regs.global(), GINTMSK,
                 USBRST: 1, ENUMDNEM: 1,
                 USBSUSPM: 1, WUIM: 1,
-                IEPINT: 1, RXFLVLM: 1
+                IEPINT: 1, RXFLVLM: 1,
+                IISOIXFRM: 1
             );
 
             // clear pending interrupts
@@ -598,7 +599,7 @@ impl<USB: UsbPeripheral> usb_device::bus::UsbBus for UsbBus<USB> {
 
             let core_id = read_reg!(otg_global, regs.global(), CID);
 
-            let (wakeup, suspend, enum_done, reset, iep, rxflvl) = read_reg!(
+            let (wakeup, suspend, enum_done, reset, iep, rxflvl, iisoixfr) = read_reg!(
                 otg_global,
                 regs.global(),
                 GINTSTS,
@@ -607,7 +608,8 @@ impl<USB: UsbPeripheral> usb_device::bus::UsbBus for UsbBus<USB> {
                 ENUMDNE,
                 USBRST,
                 IEPINT,
-                RXFLVL
+                RXFLVL,
+                IISOIXFR
             );
 
             if reset != 0 {
@@ -676,6 +678,66 @@ impl<USB: UsbPeripheral> usb_device::bus::UsbBus for UsbBus<USB> {
                 write_reg!(otg_global, regs.global(), GINTSTS, USBSUSP: 1);
 
                 PollResult::Suspend
+            } else if iisoixfr != 0 {
+                use crate::ral::endpoint_in;
+
+                // Incomplete isochronous IN transfer; see
+                // RM0383 Rev 3 pp797 "Incomplete isochronous IN data transfers"
+                write_reg!(otg_global, regs.global(), GINTSTS, IISOIXFR: 1);
+
+                let in_endpoints = self
+                    .allocator
+                    .endpoints_in
+                    .iter()
+                    .flatten()
+                    .map(|ep| ep.address().index());
+
+                let mut iep: u16 = 0;
+
+                for epnum in in_endpoints {
+                    let ep_regs = regs.endpoint_in(epnum);
+
+                    // Filter out non-isochronous endpoints
+                    if read_reg!(endpoint_in, ep_regs, DIEPCTL, EPTYP) & 0x11 != 0x01 {
+                        continue;
+                    }
+
+                    // RM0383 states that the NAK bit in DIEPINT is set when a
+                    // zero length packet is transmitted due to unavailability
+                    // of data in the Tx FIFO.
+                    // However, this bit is not defined in the RAL and
+                    // by checking several STM32 RMs, it's even unclear
+                    // if it actually exists on OTG_FS peripherals.
+                    // While testing with macOS, the bit was never set.
+                    // Therefore, an alternative method is used to check if
+                    // an endpoint is affected.
+                    // TODO: investigate if this check works correctly and
+                    // does not affect other isochronous IN endpoints by mistake.
+                    if read_reg!(endpoint_in, ep_regs, DIEPCTL, NAKSTS) == 1 {
+                        continue;
+                    }
+
+                    // Set NAK
+                    modify_reg!(endpoint_in, ep_regs, DIEPCTL, SNAK: 1);
+                    while read_reg!(endpoint_in, ep_regs, DIEPINT, INEPNE) == 0 {}
+
+                    // Disable the endpoint
+                    modify_reg!(endpoint_in, ep_regs, DIEPCTL, SNAK: 1, EPDIS: 1);
+                    while read_reg!(endpoint_in, ep_regs, DIEPINT, EPDISD) == 0 {}
+                    modify_reg!(endpoint_in, ep_regs, DIEPINT, EPDISD: 1);
+
+                    // Flush the TX FIFO
+                    modify_reg!(otg_global, regs.global(), GRSTCTL, TXFNUM: epnum as u32, TXFFLSH: 1);
+                    while read_reg!(otg_global, regs.global(), GRSTCTL, TXFFLSH) == 1 {}
+
+                    iep |= 1 << epnum;
+                }
+
+                PollResult::Data {
+                    ep_out: 0,
+                    ep_in_complete: iep,
+                    ep_setup: 0,
+                }
             } else {
                 let mut ep_out = 0;
                 let mut ep_in_complete = 0;
@@ -719,22 +781,6 @@ impl<USB: UsbPeripheral> usb_device::bus::UsbBus for UsbBus<USB> {
                         }
                     }
 
-                    if status == 0x02 {
-                        if let Some(ep) = &self.allocator.endpoints_out[epnum as usize] {
-                            if let EndpointType::Isochronous {
-                                synchronization: _,
-                                usage: _,
-                            } = ep.ep_type()
-                            {
-                                let ep = regs.endpoint_out(epnum as usize);
-                                let odd = read_reg!(endpoint_out, ep, DOEPCTL, EONUM_DPID);
-                                modify_reg!(endpoint_out, ep, DOEPCTL,
-                                    SD0PID_SEVNFRM: odd as u32,
-                                    SODDFRM: !odd as u32);
-                            }
-                        }
-                    }
-
                     if status == 0x02 || status == 0x06 {
                         if let Some(ep) = &self.allocator.endpoints_out[epnum as usize] {
                             let mut buffer = ep.buffer.borrow_ref_mut(cs);
@@ -767,21 +813,6 @@ impl<USB: UsbPeripheral> usb_device::bus::UsbBus for UsbBus<USB> {
                         if let Some(ep) = ep {
                             let ep_regs = regs.endpoint_in(ep.address().index());
                             if read_reg!(endpoint_in, ep_regs, DIEPINT, XFRC) != 0 {
-                                if let EndpointType::Isochronous {
-                                    synchronization: _,
-                                    usage: _,
-                                } = ep.ep_type()
-                                {
-                                    let odd = read_reg!(endpoint_in, ep_regs, DIEPCTL, EONUM_DPID);
-                                    #[cfg(feature = "fs")]
-                                    modify_reg!(endpoint_in, ep_regs, DIEPCTL,
-                                        SD0PID_SEVNFRM: odd as u32,
-                                        SODDFRM_SD1PID: !odd as u32);
-                                    #[cfg(feature = "hs")]
-                                    modify_reg!(endpoint_in, ep_regs, DIEPCTL,
-                                            SD0PID_SEVNFRM: odd as u32,
-                                            SODDFRM: !odd as u32);
-                                }
                                 write_reg!(endpoint_in, ep_regs, DIEPINT, XFRC: 1);
                                 ep_in_complete |= 1 << ep.address().index();
                             }
